@@ -1,6 +1,5 @@
-let monitoringInterval = null;
-let monitoredTabId = null;
-let monitoredUrl = null;
+let monitoringIntervals = {};
+let monitoredTabs = {};
 let isSelectingElement = false;
 
 // Fonction pour envoyer une notification
@@ -87,17 +86,17 @@ async function injectSelectionScript() {
           const selector = generateSelector(e.target);
           const text = e.target.textContent.trim();
           
-          // Sauvegarder le sélecteur et le texte dans le stockage local
-          chrome.storage.local.set({ 
-            selectedSelector: selector,
-            selectedText: text,
-            selectionComplete: true
-          }, () => {
-            // Nettoyer
-            document.body.classList.remove('ticketalert-selection-mode');
-            style.remove();
-            document.removeEventListener('click', clickHandler, true);
+          // Envoyer le sélecteur et le texte au background script
+          chrome.runtime.sendMessage({
+            action: 'elementSelected',
+            selector: selector,
+            text: text
           });
+
+          // Nettoyer
+          document.body.classList.remove('ticketalert-selection-mode');
+          style.remove();
+          document.removeEventListener('click', clickHandler, true);
         };
 
         document.addEventListener('click', clickHandler, true);
@@ -133,28 +132,15 @@ async function cleanupSelectionMode() {
 }
 
 // Fonction pour vérifier le contenu de la page
-async function checkPageContent(selector, expectedText) {
+async function checkPageContent(tabId, url, selector, expectedText) {
   try {
-    // Vérifier si nous avons un onglet enregistré
-    if (!monitoredTabId || !monitoredUrl) {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab) {
-        throw new Error('Aucun onglet actif trouvé');
-      }
-      monitoredTabId = tab.id;
-      monitoredUrl = tab.url;
-    }
-
-    // Rafraîchir la page
-    await chrome.tabs.reload(monitoredTabId);
-
-    // Attendre un peu que la page se charge
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    // Vérifier si l'onglet existe toujours et est sur la bonne URL
-    const tab = await chrome.tabs.get(monitoredTabId);
-    if (tab.url !== monitoredUrl) {
-      stopMonitoring();
+    console.log('Vérification de la page:', { tabId, url, selector, expectedText });
+    
+    // Vérifier si l'onglet existe toujours
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab) {
+      console.log('L\'onglet n\'existe plus');
+      stopMonitoring(tabId);
       await sendNotification(
         'TicketAlert - Erreur',
         'La page surveillée a changé. Surveillance arrêtée.'
@@ -162,36 +148,52 @@ async function checkPageContent(selector, expectedText) {
       return;
     }
 
+    // Rafraîchir la page
+    await chrome.tabs.reload(tabId);
+
+    // Attendre un peu que la page se charge
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
+    console.log('Exécution du script de vérification');
     const results = await chrome.scripting.executeScript({
-      target: { tabId: monitoredTabId },
+      target: { tabId: tabId },
       function: (selector, expectedText) => {
+        console.log('Recherche de l\'élément avec le sélecteur:', selector);
         const element = document.querySelector(selector);
-        if (!element) return { error: 'Élément non trouvé' };
+        if (!element) {
+          console.log('Élément non trouvé');
+          return { error: 'Élément non trouvé' };
+        }
+        const text = element.textContent.trim();
+        console.log('Texte trouvé:', text);
         return { 
-          text: element.textContent.trim(),
-          matches: element.textContent.trim() === expectedText
+          text: text,
+          matches: text === expectedText
         };
       },
       args: [selector, expectedText]
     });
 
+    console.log('Résultats de la vérification:', results);
     const result = results[0].result;
     
     if (result.error) {
+      console.log('Erreur:', result.error);
       await sendNotification(
         'TicketAlert - Erreur',
         'Élément non trouvé sur la page. Vérifiez le sélecteur CSS.'
       );
-      stopMonitoring();
+      stopMonitoring(tabId);
       return;
     }
 
     if (!result.matches) {
+      console.log('Changement détecté:', { expected: expectedText, found: result.text });
       await sendNotification(
         'TicketAlert - Changement détecté!',
         `Le texte a changé!\nAncienne valeur: "${expectedText}"\nNouvelle valeur: "${result.text}"`
       );
-      stopMonitoring();
+      stopMonitoring(tabId);
     }
   } catch (error) {
     console.error('Erreur lors de la vérification:', error);
@@ -199,25 +201,19 @@ async function checkPageContent(selector, expectedText) {
       'TicketAlert - Erreur',
       'Une erreur est survenue pendant la surveillance.'
     );
-    stopMonitoring();
+    stopMonitoring(tabId);
   }
 }
 
 // Démarrer la surveillance
-async function startMonitoring(selector, text, interval) {
-  if (monitoringInterval) {
-    clearInterval(monitoringInterval);
+async function startMonitoring(tabId, url, selector, text, interval) {
+  console.log('Démarrage de la surveillance:', { tabId, url, selector, text, interval });
+  
+  if (monitoringIntervals[tabId]) {
+    clearInterval(monitoringIntervals[tabId]);
   }
 
   try {
-    // Réinitialiser les variables de surveillance
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-    if (!tab) {
-      throw new Error('Aucun onglet actif trouvé');
-    }
-    monitoredTabId = tab.id;
-    monitoredUrl = tab.url;
-
     // Notification de démarrage
     await sendNotification(
       'TicketAlert - Surveillance démarrée',
@@ -225,12 +221,12 @@ async function startMonitoring(selector, text, interval) {
     );
 
     // Démarrer la surveillance
-    monitoringInterval = setInterval(() => {
-      checkPageContent(selector, text);
+    monitoringIntervals[tabId] = setInterval(() => {
+      checkPageContent(tabId, url, selector, text);
     }, interval * 1000);
 
     // Première vérification immédiate
-    checkPageContent(selector, text);
+    await checkPageContent(tabId, url, selector, text);
   } catch (error) {
     console.error('Erreur lors du démarrage de la surveillance:', error);
     await sendNotification(
@@ -241,36 +237,42 @@ async function startMonitoring(selector, text, interval) {
 }
 
 // Arrêter la surveillance
-async function stopMonitoring() {
-  if (monitoringInterval) {
-    clearInterval(monitoringInterval);
-    monitoringInterval = null;
+async function stopMonitoring(tabId) {
+  if (monitoringIntervals[tabId]) {
+    clearInterval(monitoringIntervals[tabId]);
+    delete monitoringIntervals[tabId];
   }
-  monitoredTabId = null;
-  monitoredUrl = null;
-  chrome.storage.local.set({ isMonitoring: false });
+  delete monitoredTabs[tabId];
 }
 
 // Écouter les messages du popup et du script injecté
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'startMonitoring') {
-    const { selector, text, interval } = request.data;
-    startMonitoring(selector, text, interval);
+    const { selector, text, interval, url } = request.data;
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      const tabId = tabs[0].id;
+      monitoredTabs[tabId] = url;
+      startMonitoring(tabId, url, selector, text, interval);
+    });
   } else if (request.action === 'stopMonitoring') {
-    stopMonitoring();
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      const tabId = tabs[0].id;
+      stopMonitoring(tabId);
+    });
   } else if (request.action === 'startElementSelection') {
     isSelectingElement = true;
-    // Réinitialiser les états de sélection
-    chrome.storage.local.set({ 
-      selectedSelector: null,
-      selectionComplete: false,
-      selectionError: null
-    }, () => {
-      injectSelectionScript();
-    });
+    injectSelectionScript();
   } else if (request.action === 'stopElementSelection') {
     isSelectingElement = false;
     cleanupSelectionMode();
+  } else if (request.action === 'elementSelected') {
+    // Sauvegarder la sélection dans le stockage local
+    chrome.storage.local.set({
+      lastSelection: {
+        selector: request.selector,
+        text: request.text
+      }
+    });
   } else if (request.action === 'openSelectorWindow') {
     // Ouvrir une fenêtre séparée pour la sélection
     chrome.windows.create({
@@ -279,17 +281,27 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       width: 400,
       height: 300
     });
+  } else if (request.action === 'getLastSelection') {
+    // Récupérer la dernière sélection
+    chrome.storage.local.get(['lastSelection'], (result) => {
+      if (result.lastSelection) {
+        sendResponse(result.lastSelection);
+        // Nettoyer la sélection temporaire
+        chrome.storage.local.remove('lastSelection');
+      }
+    });
+    return true; // Indique que nous allons appeler sendResponse de manière asynchrone
   }
 });
 
 // Nettoyer lors de la désinstallation/mise à jour
 chrome.runtime.onInstalled.addListener(() => {
-  stopMonitoring();
+  Object.keys(monitoringIntervals).forEach(tabId => stopMonitoring(tabId));
 });
 
 // Arrêter la surveillance si l'onglet est fermé
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === monitoredTabId) {
-    stopMonitoring();
+  if (monitoringIntervals[tabId]) {
+    stopMonitoring(tabId);
   }
 });

@@ -1,117 +1,162 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const toggleButton = document.getElementById('toggleMonitoring');
-  const selectButton = document.getElementById('selectElement');
-  const selectorHelp = document.getElementById('selectorHelp');
-  const statusDiv = document.getElementById('status');
   const selectorInput = document.getElementById('selector');
   const textInput = document.getElementById('text');
   const intervalInput = document.getElementById('interval');
-
+  const selectButton = document.getElementById('selectElement');
+  const toggleButton = document.getElementById('toggleMonitoring');
+  const statusDiv = document.getElementById('status');
+  const selectorHelp = document.getElementById('selectorHelp');
   let isSelecting = false;
 
-  // Charger les paramètres sauvegardés
-  chrome.storage.local.get(['isMonitoring', 'selector', 'text', 'interval'], (result) => {
-    if (result.selector) selectorInput.value = result.selector;
-    if (result.text) textInput.value = result.text;
-    if (result.interval) intervalInput.value = result.interval;
-    
-    if (result.isMonitoring) {
-      toggleButton.textContent = 'Arrêter la surveillance';
-      statusDiv.textContent = 'Surveillance active';
-      statusDiv.classList.remove('inactive');
-      statusDiv.classList.add('active');
-    }
-  });
-
-  // Vérifier périodiquement l'état de la sélection
-  const checkSelectionState = () => {
-    chrome.storage.local.get(['selectedSelector', 'selectedText', 'selectionComplete', 'selectionError'], (result) => {
-      if (result.selectionError) {
-        isSelecting = false;
-        selectButton.textContent = 'Sélectionner un élément';
-        selectButton.classList.remove('active');
-        selectorHelp.classList.remove('visible');
-        alert(result.selectionError);
-        // Nettoyer l'erreur
-        chrome.storage.local.remove('selectionError');
-      } else if (result.selectionComplete && result.selectedSelector) {
-        isSelecting = false;
-        selectButton.textContent = 'Sélectionner un élément';
-        selectButton.classList.remove('active');
-        selectorHelp.classList.remove('visible');
-        selectorInput.value = result.selectedSelector;
-        textInput.value = result.selectedText;
-        // Sauvegarder le sélecteur et le texte
-        chrome.storage.local.set({ 
-          selector: result.selectedSelector,
-          text: result.selectedText
+  // Fonction pour vérifier la sélection
+  function checkSelection() {
+    chrome.storage.local.get(['lastSelection'], (result) => {
+      if (result.lastSelection) {
+        chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+          const currentUrl = tabs[0].url;
+          
+          // Sauvegarder le sélecteur pour cette URL
+          chrome.storage.local.get(['monitoredUrls'], (urlResult) => {
+            const monitoredUrls = urlResult.monitoredUrls || {};
+            monitoredUrls[currentUrl] = {
+              ...monitoredUrls[currentUrl],
+              selector: result.lastSelection.selector,
+              text: result.lastSelection.text
+            };
+            
+            // Mettre à jour les champs immédiatement
+            selectorInput.value = result.lastSelection.selector;
+            textInput.value = result.lastSelection.text;
+            
+            // Sauvegarder dans le stockage
+            chrome.storage.local.set({ monitoredUrls }, () => {
+              // Nettoyer la sélection temporaire
+              chrome.storage.local.remove('lastSelection');
+              isSelecting = false;
+              selectButton.textContent = 'Sélectionner';
+              selectButton.classList.remove('active');
+              selectorHelp.classList.remove('visible');
+            });
+          });
         });
-        // Nettoyer l'état de sélection
-        chrome.storage.local.remove(['selectedSelector', 'selectedText', 'selectionComplete']);
       }
     });
-  };
+  }
 
-  // Démarrer la vérification périodique
-  const selectionCheckInterval = setInterval(checkSelectionState, 100);
+  // Vérifier la sélection toutes les 100ms
+  const selectionInterval = setInterval(checkSelection, 100);
 
-  // Gestionnaire pour le bouton de sélection
+  // Nettoyer l'intervalle quand la fenêtre est fermée
+  window.addEventListener('unload', () => {
+    clearInterval(selectionInterval);
+  });
+
+  // Obtenir l'URL actuelle
+  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+    const currentUrl = tabs[0].url;
+    
+    // Charger les paramètres sauvegardés pour cette URL
+    chrome.storage.local.get(['monitoredUrls'], (result) => {
+      const monitoredUrls = result.monitoredUrls || {};
+      const urlData = monitoredUrls[currentUrl] || {
+        selector: '',
+        text: '',
+        interval: 15,
+        isMonitoring: false
+      };
+
+      // Remplir les champs avec les données de l'URL
+      selectorInput.value = urlData.selector;
+      textInput.value = urlData.text;
+      intervalInput.value = urlData.interval;
+
+      // Mettre à jour le statut
+      if (urlData.isMonitoring) {
+        statusDiv.textContent = 'Surveillance active';
+        statusDiv.classList.remove('inactive');
+        statusDiv.classList.add('active');
+        toggleButton.textContent = 'Arrêter la surveillance';
+      }
+    });
+  });
+
+  // Gérer la sélection d'élément
   selectButton.addEventListener('click', async () => {
     if (!isSelecting) {
-      // Démarrer le mode sélection
       isSelecting = true;
-      selectButton.textContent = 'Annuler la sélection';
+      selectButton.textContent = 'Annuler';
       selectButton.classList.add('active');
       selectorHelp.classList.add('visible');
-
-      // Envoyer un message au background script pour activer le mode sélection
+      
       chrome.runtime.sendMessage({ action: 'startElementSelection' });
     } else {
-      // Annuler le mode sélection
       isSelecting = false;
-      selectButton.textContent = 'Sélectionner un élément';
+      selectButton.textContent = 'Sélectionner';
       selectButton.classList.remove('active');
       selectorHelp.classList.remove('visible');
-
-      // Envoyer un message au background script pour désactiver le mode sélection
+      
       chrome.runtime.sendMessage({ action: 'stopElementSelection' });
     }
   });
 
+  // Gérer le démarrage/arrêt de la surveillance
   toggleButton.addEventListener('click', async () => {
-    const isMonitoring = toggleButton.textContent === 'Démarrer la surveillance';
     const selector = selectorInput.value;
     const text = textInput.value;
     const interval = parseInt(intervalInput.value);
 
-    if (!selector || !text || !interval) {
+    if (!selector || !text) {
       alert('Veuillez remplir tous les champs');
       return;
     }
 
-    // Sauvegarder les paramètres
-    await chrome.storage.local.set({
-      isMonitoring,
-      selector,
-      text,
-      interval
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      const currentUrl = tabs[0].url;
+      
+      chrome.storage.local.get(['monitoredUrls'], (result) => {
+        const monitoredUrls = result.monitoredUrls || {};
+        const isMonitoring = monitoredUrls[currentUrl]?.isMonitoring || false;
+
+        if (!isMonitoring) {
+          // Démarrer la surveillance
+          chrome.runtime.sendMessage({
+            action: 'startMonitoring',
+            data: { selector, text, interval, url: currentUrl }
+          });
+
+          // Mettre à jour le stockage
+          monitoredUrls[currentUrl] = {
+            ...monitoredUrls[currentUrl],
+            selector,
+            text,
+            interval,
+            isMonitoring: true
+          };
+
+          chrome.storage.local.set({ monitoredUrls }, () => {
+            statusDiv.textContent = 'Surveillance active';
+            statusDiv.classList.remove('inactive');
+            statusDiv.classList.add('active');
+            toggleButton.textContent = 'Arrêter la surveillance';
+          });
+        } else {
+          // Arrêter la surveillance
+          chrome.runtime.sendMessage({ action: 'stopMonitoring' });
+
+          // Mettre à jour le stockage
+          monitoredUrls[currentUrl] = {
+            ...monitoredUrls[currentUrl],
+            isMonitoring: false
+          };
+
+          chrome.storage.local.set({ monitoredUrls }, () => {
+            statusDiv.textContent = 'Surveillance inactive';
+            statusDiv.classList.remove('active');
+            statusDiv.classList.add('inactive');
+            toggleButton.textContent = 'Démarrer la surveillance';
+          });
+        }
+      });
     });
-
-    // Envoyer un message au background script
-    chrome.runtime.sendMessage({
-      action: isMonitoring ? 'startMonitoring' : 'stopMonitoring',
-      data: { selector, text, interval }
-    });
-
-    // Mettre à jour l'interface
-    toggleButton.textContent = isMonitoring ? 'Arrêter la surveillance' : 'Démarrer la surveillance';
-    statusDiv.textContent = isMonitoring ? 'Surveillance active' : 'Surveillance inactive';
-    statusDiv.classList.toggle('active', isMonitoring);
-    statusDiv.classList.toggle('inactive', !isMonitoring);
-  });
-
-  // Nettoyer l'intervalle quand la fenêtre est fermée
-  window.addEventListener('unload', () => {
-    clearInterval(selectionCheckInterval);
   });
 });
