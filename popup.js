@@ -1,12 +1,24 @@
 document.addEventListener('DOMContentLoaded', () => {
-  const selectorInput = document.getElementById('selector');
-  const textInput = document.getElementById('text');
-  const intervalInput = document.getElementById('interval');
   const selectButton = document.getElementById('selectElement');
   const toggleButton = document.getElementById('toggleMonitoring');
   const statusDiv = document.getElementById('status');
   const selectorHelp = document.getElementById('selectorHelp');
+  const selectionDisplay = document.getElementById('selectionDisplay');
+  const selectionText = document.getElementById('selectionText');
+  const clearSelection = document.getElementById('clearSelection');
+  const refreshInterval = document.getElementById('refreshInterval');
   let isSelecting = false;
+
+  // Fonction pour mettre à jour l'affichage de la sélection
+  function updateSelectionDisplay(fingerprint) {
+    if (fingerprint) {
+      selectionText.textContent = fingerprint.text;
+      selectionDisplay.classList.add('visible');
+    } else {
+      selectionText.textContent = '';
+      selectionDisplay.classList.remove('visible');
+    }
+  }
 
   // Fonction pour vérifier la sélection
   function checkSelection() {
@@ -20,22 +32,19 @@ document.addEventListener('DOMContentLoaded', () => {
             const monitoredUrls = urlResult.monitoredUrls || {};
             monitoredUrls[currentUrl] = {
               ...monitoredUrls[currentUrl],
-              selector: result.lastSelection.selector,
-              text: result.lastSelection.text
+              fingerprint: result.lastSelection.fingerprint,
+              isMonitoring: false
             };
-            
-            // Mettre à jour les champs immédiatement
-            selectorInput.value = result.lastSelection.selector;
-            textInput.value = result.lastSelection.text;
             
             // Sauvegarder dans le stockage
             chrome.storage.local.set({ monitoredUrls }, () => {
               // Nettoyer la sélection temporaire
               chrome.storage.local.remove('lastSelection');
               isSelecting = false;
-              selectButton.textContent = 'Sélectionner';
+              selectButton.textContent = 'Sélectionner un élément';
               selectButton.classList.remove('active');
               selectorHelp.classList.remove('visible');
+              updateSelectionDisplay(result.lastSelection.fingerprint);
             });
           });
         });
@@ -51,34 +60,40 @@ document.addEventListener('DOMContentLoaded', () => {
     clearInterval(selectionInterval);
   });
 
-  // Obtenir l'URL actuelle
-  chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
-    const currentUrl = tabs[0].url;
-    
-    // Charger les paramètres sauvegardés pour cette URL
-    chrome.storage.local.get(['monitoredUrls'], (result) => {
-      const monitoredUrls = result.monitoredUrls || {};
-      const urlData = monitoredUrls[currentUrl] || {
-        selector: '',
-        text: '',
-        interval: 15,
-        isMonitoring: false
-      };
+  // Obtenir l'URL actuelle et mettre à jour l'interface
+  function updateInterface() {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      const currentUrl = tabs[0].url;
+      
+      chrome.storage.local.get(['monitoredUrls'], (result) => {
+        const monitoredUrls = result.monitoredUrls || {};
+        const urlData = monitoredUrls[currentUrl];
 
-      // Remplir les champs avec les données de l'URL
-      selectorInput.value = urlData.selector;
-      textInput.value = urlData.text;
-      intervalInput.value = urlData.interval;
+        // Mettre à jour l'affichage de la sélection
+        if (urlData?.fingerprint) {
+          updateSelectionDisplay(urlData.fingerprint);
+        } else {
+          updateSelectionDisplay(null);
+        }
 
-      // Mettre à jour le statut
-      if (urlData.isMonitoring) {
-        statusDiv.textContent = 'Surveillance active';
-        statusDiv.classList.remove('inactive');
-        statusDiv.classList.add('active');
-        toggleButton.textContent = 'Arrêter la surveillance';
-      }
+        // Mettre à jour le statut
+        if (urlData?.isMonitoring) {
+          statusDiv.textContent = 'Surveillance active';
+          statusDiv.classList.remove('inactive');
+          statusDiv.classList.add('active');
+          toggleButton.textContent = 'Arrêter la surveillance';
+        } else {
+          statusDiv.textContent = 'Surveillance inactive';
+          statusDiv.classList.add('inactive');
+          statusDiv.classList.remove('active');
+          toggleButton.textContent = 'Démarrer la surveillance';
+        }
+      });
     });
-  });
+  }
+
+  // Mettre à jour l'interface au chargement
+  updateInterface();
 
   // Gérer la sélection d'élément
   selectButton.addEventListener('click', async () => {
@@ -91,7 +106,7 @@ document.addEventListener('DOMContentLoaded', () => {
       chrome.runtime.sendMessage({ action: 'startElementSelection' });
     } else {
       isSelecting = false;
-      selectButton.textContent = 'Sélectionner';
+      selectButton.textContent = 'Sélectionner un élément';
       selectButton.classList.remove('active');
       selectorHelp.classList.remove('visible');
       
@@ -99,45 +114,63 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   });
 
-  // Gérer le démarrage/arrêt de la surveillance
-  toggleButton.addEventListener('click', async () => {
-    const selector = selectorInput.value;
-    const text = textInput.value;
-    const interval = parseInt(intervalInput.value);
-
-    if (!selector || !text) {
-      alert('Veuillez remplir tous les champs');
-      return;
-    }
-
+  // Gérer la suppression de la sélection
+  clearSelection.addEventListener('click', () => {
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       const currentUrl = tabs[0].url;
       
       chrome.storage.local.get(['monitoredUrls'], (result) => {
         const monitoredUrls = result.monitoredUrls || {};
-        const isMonitoring = monitoredUrls[currentUrl]?.isMonitoring || false;
+        
+        // Si la surveillance est active, l'arrêter d'abord
+        if (monitoredUrls[currentUrl]?.isMonitoring) {
+          chrome.runtime.sendMessage({ action: 'stopMonitoring' });
+        }
 
-        if (!isMonitoring) {
+        // Supprimer la sélection pour cette URL
+        delete monitoredUrls[currentUrl];
+        
+        chrome.storage.local.set({ monitoredUrls }, () => {
+          updateInterface();
+        });
+      });
+    });
+  });
+
+  // Gérer le démarrage/arrêt de la surveillance
+  toggleButton.addEventListener('click', async () => {
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      const currentUrl = tabs[0].url;
+      
+      chrome.storage.local.get(['monitoredUrls'], (result) => {
+        const monitoredUrls = result.monitoredUrls || {};
+        const urlData = monitoredUrls[currentUrl];
+
+        if (!urlData?.fingerprint) {
+          alert('Veuillez d\'abord sélectionner un élément à surveiller');
+          return;
+        }
+
+        if (!urlData.isMonitoring) {
           // Démarrer la surveillance
           chrome.runtime.sendMessage({
             action: 'startMonitoring',
-            data: { selector, text, interval, url: currentUrl }
+            data: { 
+              fingerprint: urlData.fingerprint,
+              url: currentUrl,
+              interval: parseInt(refreshInterval.value, 10)
+            }
           });
 
           // Mettre à jour le stockage
           monitoredUrls[currentUrl] = {
             ...monitoredUrls[currentUrl],
-            selector,
-            text,
-            interval,
-            isMonitoring: true
+            isMonitoring: true,
+            interval: parseInt(refreshInterval.value, 10)
           };
 
           chrome.storage.local.set({ monitoredUrls }, () => {
-            statusDiv.textContent = 'Surveillance active';
-            statusDiv.classList.remove('inactive');
-            statusDiv.classList.add('active');
-            toggleButton.textContent = 'Arrêter la surveillance';
+            updateInterface();
           });
         } else {
           // Arrêter la surveillance
@@ -150,13 +183,30 @@ document.addEventListener('DOMContentLoaded', () => {
           };
 
           chrome.storage.local.set({ monitoredUrls }, () => {
-            statusDiv.textContent = 'Surveillance inactive';
-            statusDiv.classList.remove('active');
-            statusDiv.classList.add('inactive');
-            toggleButton.textContent = 'Démarrer la surveillance';
+            updateInterface();
           });
         }
       });
     });
+  });
+
+  // Écouter les messages du background script
+  chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+    if (request.action === 'monitoringStopped') {
+      // Mettre à jour l'interface quand la surveillance est arrêtée
+      chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+        const currentUrl = tabs[0].url;
+        
+        chrome.storage.local.get(['monitoredUrls'], (result) => {
+          const monitoredUrls = result.monitoredUrls || {};
+          if (monitoredUrls[currentUrl]) {
+            monitoredUrls[currentUrl].isMonitoring = false;
+            chrome.storage.local.set({ monitoredUrls }, () => {
+              updateInterface();
+            });
+          }
+        });
+      });
+    }
   });
 });

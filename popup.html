@@ -51,39 +51,70 @@
       color: var(--text);
     }
 
-    .form-group {
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-
-    label {
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-secondary);
-    }
-
-    input[type="text"], input[type="number"] {
-      width: 100%;
-      padding: 12px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      font-size: 14px;
+    .selection-display {
+      display: none;
       background: var(--input-background);
-      transition: all 0.2s ease;
-      box-sizing: border-box;
+      padding: 12px;
+      border-radius: 8px;
+      margin-top: 10px;
+      position: relative;
     }
 
-    input[type="text"]:focus, input[type="number"]:focus {
-      outline: none;
-      border-color: var(--primary);
-      background: var(--background);
-      box-shadow: 0 0 0 3px rgba(0, 122, 255, 0.1);
+    .selection-display.visible {
+      display: block;
+      animation: fadeIn 0.2s ease;
     }
 
-    .button-group {
+    .selection-text {
+      font-size: 14px;
+      color: var(--text);
+      margin-right: 24px;
+      word-break: break-word;
+    }
+
+    .clear-selection {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: var(--border);
+      border: none;
+      cursor: pointer;
       display: flex;
-      gap: 8px;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s ease;
+    }
+
+    .clear-selection:hover {
+      background: var(--danger);
+      transform: scale(1.1);
+    }
+
+    .clear-selection:hover::before,
+    .clear-selection:hover::after {
+      background: white;
+    }
+
+    .clear-selection::before,
+    .clear-selection::after {
+      content: '';
+      position: absolute;
+      width: 12px;
+      height: 2px;
+      background: var(--text);
+      transform-origin: center;
+      transition: all 0.2s ease;
+    }
+
+    .clear-selection::before {
+      transform: rotate(45deg);
+    }
+
+    .clear-selection::after {
+      transform: rotate(-45deg);
     }
 
     button {
@@ -94,7 +125,7 @@
       font-weight: 500;
       cursor: pointer;
       transition: all 0.2s ease;
-      flex: 1;
+      width: 100%;
     }
 
     button.primary {
@@ -173,6 +204,35 @@
       width: 12px;
       height: 12px;
     }
+
+    .refresh-interval {
+      margin: 10px 0;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .interval-select {
+      flex: 1;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--input-background);
+      color: var(--text);
+      font-size: 14px;
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .interval-select:focus {
+      border-color: var(--primary);
+      box-shadow: 0 0 0 2px rgba(0, 122, 255, 0.1);
+    }
+
+    label {
+      font-size: 14px;
+      color: var(--text);
+    }
   </style>
 </head>
 <body>
@@ -188,25 +248,25 @@
       </span>
     </div>
 
-    <div class="form-group">
-      <label for="selector">Sélecteur CSS</label>
-      <div class="button-group">
-        <input type="text" id="selector" placeholder="Exemple : .sold-out, #availability">
-        <button id="selectElement" class="secondary">Sélectionner</button>
-      </div>
-      <div id="selectorHelp" class="help-text">
-        Cliquez sur l'élément que vous souhaitez surveiller dans la page
-      </div>
+    <div class="selection-display" id="selectionDisplay">
+      <div class="selection-text" id="selectionText"></div>
+      <button class="clear-selection" id="clearSelection" title="Supprimer la sélection"></button>
+    </div>
+
+    <button id="selectElement" class="secondary">Sélectionner un élément</button>
+    <div id="selectorHelp" class="help-text">
+      Cliquez sur l'élément que vous souhaitez surveiller dans la page
     </div>
     
-    <div class="form-group">
-      <label for="text">Texte à surveiller</label>
-      <input type="text" id="text" placeholder="Exemple : Complet, Épuisé">
-    </div>
-    
-    <div class="form-group">
-      <label for="interval">Intervalle de vérification (secondes)</label>
-      <input type="number" id="interval" value="15" min="5">
+    <div class="refresh-interval">
+      <label for="refreshInterval">Intervalle de rafraîchissement :</label>
+      <select id="refreshInterval" class="interval-select">
+        <option value="5">5 secondes</option>
+        <option value="10">10 secondes</option>
+        <option value="15" selected>15 secondes</option>
+        <option value="30">30 secondes</option>
+        <option value="60">1 minute</option>
+      </select>
     </div>
     
     <button id="toggleMonitoring" class="primary">Démarrer la surveillance</button>

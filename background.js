@@ -29,37 +29,61 @@ async function injectSelectionScript() {
     await chrome.scripting.executeScript({
       target: { tabId: tab.id },
       function: () => {
-        // Fonction pour générer un sélecteur CSS unique
-        function generateSelector(element) {
-          if (element.id) {
-            return '#' + element.id;
-          }
+        // Fonction pour obtenir une empreinte unique de l'élément
+        function getElementFingerprint(element) {
+          // Créer une copie de l'élément pour le nettoyer
+          const clone = element.cloneNode(true);
           
-          if (element.className) {
-            const classes = Array.from(element.classList).join('.');
-            return '.' + classes;
+          // Supprimer tous les éléments avec la classe ticketalert-
+          const ticketAlertElements = clone.querySelectorAll('[class^="ticketalert-"]');
+          ticketAlertElements.forEach(el => el.remove());
+          
+          // Obtenir le texte nettoyé
+          const cleanText = element.textContent.replace(/\s+/g, ' ').trim();
+          
+          // Obtenir le chemin XPath relatif
+          function getXPath(node) {
+            const parts = [];
+            while (node && node.nodeType === Node.ELEMENT_NODE) {
+              let siblings = Array.from(node.parentNode.children).filter(
+                child => child.nodeName === node.nodeName
+              );
+              
+              if (siblings.length > 1) {
+                let index = siblings.indexOf(node) + 1;
+                parts.unshift(`${node.nodeName.toLowerCase()}[${index}]`);
+              } else {
+                parts.unshift(node.nodeName.toLowerCase());
+              }
+              node = node.parentNode;
+            }
+            return parts.join('/');
           }
 
-          let path = [];
-          while (element && element.nodeType === Node.ELEMENT_NODE) {
-            let selector = element.nodeName.toLowerCase();
-            if (element.id) {
-              selector += '#' + element.id;
-              path.unshift(selector);
-              break;
+          // Créer une empreinte basée sur plusieurs caractéristiques
+          return {
+            // Texte exact (pour la comparaison précise)
+            text: cleanText,
+            // Chemin XPath pour la localisation
+            xpath: getXPath(element),
+            // Classes stables (filtrer les classes générées dynamiquement)
+            classes: Array.from(element.classList)
+              .filter(c => !c.startsWith('ticketalert-') && !c.match(/css-[a-z0-9]+/)),
+            // Type d'élément
+            tagName: element.tagName.toLowerCase(),
+            // Attributs stables
+            attributes: {
+              id: element.id,
+              href: element.getAttribute('href'),
+              src: element.getAttribute('src'),
+              type: element.getAttribute('type'),
+              role: element.getAttribute('role'),
+              'aria-label': element.getAttribute('aria-label')
             }
-            let sib = element, nth = 1;
-            while (sib = sib.previousElementSibling) {
-              if (sib.nodeName.toLowerCase() === selector) nth++;
-            }
-            if (nth !== 1) selector += ":nth-of-type("+nth+")";
-            path.unshift(selector);
-            element = element.parentNode;
-          }
-          return path.join(' > ');
+          };
         }
 
-        // Ajouter le style pour le mode sélection
+        // Ajouter le style pour le mode sélection et surveillance
         const style = document.createElement('style');
         style.setAttribute('data-ticketalert', 'true');
         style.textContent = `
@@ -67,10 +91,63 @@ async function injectSelectionScript() {
             cursor: pointer !important;
           }
           .ticketalert-selection-mode *:hover {
-            outline: 2px solid #2196F3 !important;
+            outline: 2px solid rgba(33, 150, 243, 0.5) !important;
+            outline-offset: 2px !important;
+            transition: outline 0.2s ease-in-out !important;
+            box-shadow: 0 0 15px rgba(33, 150, 243, 0.3) !important;
           }
           .ticketalert-selection-mode *:active {
-            outline: 2px solid #f44336 !important;
+            outline: 2px solid rgba(244, 67, 54, 0.7) !important;
+            outline-offset: 2px !important;
+            box-shadow: 0 0 20px rgba(244, 67, 54, 0.4) !important;
+          }
+          .ticketalert-monitored {
+            position: relative !important;
+          }
+          .ticketalert-monitored::before {
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border: 2px solid #4CAF50;
+            border-radius: 4px;
+            animation: ticketalert-pulse 2s infinite;
+            pointer-events: none;
+            z-index: 9999;
+          }
+          .ticketalert-badge {
+            position: absolute;
+            top: -10px;
+            right: -10px;
+            background: #4CAF50;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            z-index: 10000;
+            animation: ticketalert-badge-appear 0.3s ease-out;
+          }
+          @keyframes ticketalert-pulse {
+            0% {
+              box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.4);
+            }
+            70% {
+              box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
+            }
+            100% {
+              box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
+            }
+          }
+          @keyframes ticketalert-badge-appear {
+            from {
+              transform: scale(0.8);
+              opacity: 0;
+            }
+            to {
+              transform: scale(1);
+              opacity: 1;
+            }
           }
         `;
         document.head.appendChild(style);
@@ -83,19 +160,31 @@ async function injectSelectionScript() {
           e.preventDefault();
           e.stopPropagation();
           
-          const selector = generateSelector(e.target);
-          const text = e.target.textContent.trim();
+          const fingerprint = getElementFingerprint(e.target);
           
-          // Envoyer le sélecteur et le texte au background script
+          // Nettoyer les anciennes surveillances
+          const oldMonitored = document.querySelector('.ticketalert-monitored');
+          if (oldMonitored) {
+            oldMonitored.classList.remove('ticketalert-monitored');
+            const oldBadge = document.querySelector('.ticketalert-badge');
+            if (oldBadge) oldBadge.remove();
+          }
+
+          // Ajouter l'indication visuelle
+          e.target.classList.add('ticketalert-monitored');
+          const badge = document.createElement('div');
+          badge.className = 'ticketalert-badge';
+          badge.textContent = 'Surveillé';
+          e.target.appendChild(badge);
+          
+          // Envoyer l'empreinte au background script
           chrome.runtime.sendMessage({
             action: 'elementSelected',
-            selector: selector,
-            text: text
+            fingerprint: fingerprint
           });
 
-          // Nettoyer
+          // Nettoyer le mode sélection
           document.body.classList.remove('ticketalert-selection-mode');
-          style.remove();
           document.removeEventListener('click', clickHandler, true);
         };
 
@@ -132,9 +221,9 @@ async function cleanupSelectionMode() {
 }
 
 // Fonction pour vérifier le contenu de la page
-async function checkPageContent(tabId, url, selector, expectedText) {
+async function checkPageContent(tabId, url, fingerprint) {
   try {
-    console.log('Vérification de la page:', { tabId, url, selector, expectedText });
+    console.log('Vérification de la page:', { tabId, url, fingerprint });
     
     // Vérifier si l'onglet existe toujours
     const tab = await chrome.tabs.get(tabId);
@@ -148,53 +237,217 @@ async function checkPageContent(tabId, url, selector, expectedText) {
       return;
     }
 
-    // Rafraîchir la page
-    await chrome.tabs.reload(tabId);
-
-    // Attendre un peu que la page se charge
-    await new Promise(resolve => setTimeout(resolve, 2000));
-
-    console.log('Exécution du script de vérification');
-    const results = await chrome.scripting.executeScript({
+    // Vérifier l'élément avant le rafraîchissement
+    const preCheckResults = await chrome.scripting.executeScript({
       target: { tabId: tabId },
-      function: (selector, expectedText) => {
-        console.log('Recherche de l\'élément avec le sélecteur:', selector);
-        const element = document.querySelector(selector);
+      function: (fingerprint) => {
+        // Fonction pour comparer deux empreintes
+        function compareFingerprints(fp1, fp2) {
+          // Comparer le texte
+          if (fp1.text !== fp2.text) return false;
+          
+          // Comparer le tagName
+          if (fp1.tagName !== fp2.tagName) return false;
+          
+          // Comparer les classes (l'ordre n'est pas important)
+          const classes1 = new Set(fp1.classes);
+          const classes2 = new Set(fp2.classes);
+          if (classes1.size !== classes2.size) return false;
+          for (const cls of classes1) {
+            if (!classes2.has(cls)) return false;
+          }
+          
+          // Comparer les attributs non-nuls et non-vides
+          const normalizeValue = v => (!v || v === '') ? null : v;
+          const attrs1 = Object.entries(fp1.attributes)
+            .filter(([_, v]) => normalizeValue(v) !== null)
+            .map(([k, v]) => [k, normalizeValue(v)]);
+          const attrs2 = Object.entries(fp2.attributes)
+            .filter(([_, v]) => normalizeValue(v) !== null)
+            .map(([k, v]) => [k, normalizeValue(v)]);
+          
+          if (attrs1.length !== attrs2.length) return false;
+          for (const [key, value] of attrs1) {
+            if (normalizeValue(fp2.attributes[key]) !== value) return false;
+          }
+          
+          return true;
+        }
+
+        // Fonction pour obtenir une empreinte
+        function getElementFingerprint(element) {
+          const clone = element.cloneNode(true);
+          const ticketAlertElements = clone.querySelectorAll('[class^="ticketalert-"]');
+          ticketAlertElements.forEach(el => el.remove());
+          const cleanText = element.textContent.replace(/\s+/g, ' ').trim();
+          
+          // Obtenir le chemin XPath relatif
+          function getXPath(node) {
+            const parts = [];
+            while (node && node.nodeType === Node.ELEMENT_NODE) {
+              let siblings = Array.from(node.parentNode.children).filter(
+                child => child.nodeName === node.nodeName
+              );
+              
+              if (siblings.length > 1) {
+                let index = siblings.indexOf(node) + 1;
+                parts.unshift(`${node.nodeName.toLowerCase()}[${index}]`);
+              } else {
+                parts.unshift(node.nodeName.toLowerCase());
+              }
+              node = node.parentNode;
+            }
+            return parts.join('/');
+          }
+
+          return {
+            text: cleanText,
+            xpath: getXPath(element),
+            classes: Array.from(element.classList)
+              .filter(c => !c.startsWith('ticketalert-') && !c.match(/css-[a-z0-9]+/)),
+            tagName: element.tagName.toLowerCase(),
+            attributes: {
+              id: element.id || null,
+              href: element.getAttribute('href'),
+              src: element.getAttribute('src'),
+              type: element.getAttribute('type'),
+              role: element.getAttribute('role'),
+              'aria-label': element.getAttribute('aria-label')
+            }
+          };
+        }
+
+        // Fonction pour trouver l'élément correspondant
+        function findMatchingElement(fingerprint) {
+          // Essayer d'abord par XPath
+          try {
+            const xpathResult = document.evaluate(
+              '//' + fingerprint.xpath,
+              document,
+              null,
+              XPathResult.FIRST_ORDERED_NODE_TYPE,
+              null
+            );
+            const element = xpathResult.singleNodeValue;
+            if (element && element.textContent.replace(/\s+/g, ' ').trim() === fingerprint.text) {
+              return element;
+            }
+          } catch (e) {
+            console.log('Erreur XPath:', e);
+          }
+
+          // Si XPath échoue, chercher par texte et type d'élément
+          const elements = Array.from(document.getElementsByTagName(fingerprint.tagName));
+          return elements.find(element => {
+            const elementText = element.textContent.replace(/\s+/g, ' ').trim();
+            if (elementText !== fingerprint.text) return false;
+
+            // Vérifier les attributs stables
+            for (const [key, value] of Object.entries(fingerprint.attributes)) {
+              if (value && element.getAttribute(key) !== value) return false;
+            }
+
+            // Vérifier les classes stables
+            const elementClasses = Array.from(element.classList)
+              .filter(c => !c.match(/css-[a-z0-9]+/));
+            const hasAllStableClasses = fingerprint.classes.every(c => 
+              elementClasses.includes(c)
+            );
+
+            return hasAllStableClasses;
+          });
+        }
+
+        // Trouver l'élément
+        const element = findMatchingElement(fingerprint);
         if (!element) {
-          console.log('Élément non trouvé');
           return { error: 'Élément non trouvé' };
         }
-        const text = element.textContent.trim();
-        console.log('Texte trouvé:', text);
+
+        // Obtenir l'empreinte actuelle
+        const currentFingerprint = getElementFingerprint(element);
+
+        // Réappliquer le style de surveillance
+        const style = document.createElement('style');
+        style.setAttribute('data-ticketalert', 'true');
+        style.textContent = `
+          .ticketalert-monitored {
+            position: relative !important;
+          }
+          .ticketalert-monitored::before {
+            content: '';
+            position: absolute;
+            inset: -4px;
+            border: 2px solid #4CAF50;
+            border-radius: 4px;
+            animation: ticketalert-pulse 2s infinite;
+            pointer-events: none;
+            z-index: 9999;
+          }
+          .ticketalert-badge {
+            position: absolute;
+            top: -10px;
+            right: -10px;
+            background: #4CAF50;
+            color: white;
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 12px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            z-index: 10000;
+          }
+          @keyframes ticketalert-pulse {
+            0% {
+              box-shadow: 0 0 0 0 rgba(76, 175, 80, 0.4);
+            }
+            70% {
+              box-shadow: 0 0 0 10px rgba(76, 175, 80, 0);
+            }
+            100% {
+              box-shadow: 0 0 0 0 rgba(76, 175, 80, 0);
+            }
+          }
+        `;
+        document.head.appendChild(style);
+
+        // Appliquer le style à l'élément
+        element.classList.add('ticketalert-monitored');
+        const badge = document.createElement('div');
+        badge.className = 'ticketalert-badge';
+        badge.textContent = 'Surveillé';
+        element.appendChild(badge);
+
         return { 
-          text: text,
-          matches: text === expectedText
+          fingerprint: currentFingerprint,
+          matches: compareFingerprints(currentFingerprint, fingerprint),
+          error: null
         };
       },
-      args: [selector, expectedText]
+      args: [fingerprint]
     });
 
-    console.log('Résultats de la vérification:', results);
-    const result = results[0].result;
+    if (!preCheckResults || !preCheckResults[0] || !preCheckResults[0].result) {
+      throw new Error('Résultat de vérification invalide');
+    }
+
+    const preCheckResult = preCheckResults[0].result;
     
-    if (result.error) {
-      console.log('Erreur:', result.error);
+    if (preCheckResult.error || !preCheckResult.matches) {
+      // Si un changement est détecté, envoyer une notification
       await sendNotification(
-        'TicketAlert - Erreur',
-        'Élément non trouvé sur la page. Vérifiez le sélecteur CSS.'
+        'TicketAlert - Changement détecté !',
+        preCheckResult.error ? 
+          'L\'élément surveillé n\'est plus présent - La page a peut-être changé ou la billetterie est ouverte !' :
+          'Le contenu de l\'élément surveillé a changé !'
       );
       stopMonitoring(tabId);
       return;
     }
 
-    if (!result.matches) {
-      console.log('Changement détecté:', { expected: expectedText, found: result.text });
-      await sendNotification(
-        'TicketAlert - Changement détecté!',
-        `Le texte a changé!\nAncienne valeur: "${expectedText}"\nNouvelle valeur: "${result.text}"`
-      );
-      stopMonitoring(tabId);
-    }
+    // Rafraîchir la page seulement si aucun changement n'a été détecté
+    await chrome.tabs.reload(tabId);
+
   } catch (error) {
     console.error('Erreur lors de la vérification:', error);
     await sendNotification(
@@ -206,8 +459,8 @@ async function checkPageContent(tabId, url, selector, expectedText) {
 }
 
 // Démarrer la surveillance
-async function startMonitoring(tabId, url, selector, text, interval) {
-  console.log('Démarrage de la surveillance:', { tabId, url, selector, text, interval });
+async function startMonitoring(tabId, url, fingerprint, interval) {
+  console.log('Démarrage de la surveillance:', { tabId, url, fingerprint, interval });
   
   if (monitoringIntervals[tabId]) {
     clearInterval(monitoringIntervals[tabId]);
@@ -217,16 +470,17 @@ async function startMonitoring(tabId, url, selector, text, interval) {
     // Notification de démarrage
     await sendNotification(
       'TicketAlert - Surveillance démarrée',
-      `Surveillance active pour le texte "${text}"\nIntervalle: ${interval} secondes`
+      'La surveillance est active pour l\'élément sélectionné.'
     );
 
-    // Démarrer la surveillance
-    monitoringIntervals[tabId] = setInterval(() => {
-      checkPageContent(tabId, url, selector, text);
-    }, interval * 1000);
-
     // Première vérification immédiate
-    await checkPageContent(tabId, url, selector, text);
+    await checkPageContent(tabId, url, fingerprint);
+    
+    // Démarrer la surveillance périodique avec l'intervalle personnalisé
+    monitoringIntervals[tabId] = setInterval(() => {
+      checkPageContent(tabId, url, fingerprint);
+    }, interval * 1000); // Convertir les secondes en millisecondes
+
   } catch (error) {
     console.error('Erreur lors du démarrage de la surveillance:', error);
     await sendNotification(
@@ -243,16 +497,27 @@ async function stopMonitoring(tabId) {
     delete monitoringIntervals[tabId];
   }
   delete monitoredTabs[tabId];
+
+  // Notifier la popup que la surveillance est arrêtée
+  try {
+    chrome.runtime.sendMessage({ action: 'monitoringStopped' });
+  } catch (error) {
+    console.log('Popup non disponible pour la notification');
+  }
 }
 
 // Écouter les messages du popup et du script injecté
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'startMonitoring') {
-    const { selector, text, interval, url } = request.data;
+    const { fingerprint, url, interval } = request.data;
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       const tabId = tabs[0].id;
-      monitoredTabs[tabId] = url;
-      startMonitoring(tabId, url, selector, text, interval);
+      monitoredTabs[tabId] = {
+        url: url,
+        fingerprint: fingerprint,
+        interval: interval
+      };
+      startMonitoring(tabId, url, fingerprint, interval);
     });
   } else if (request.action === 'stopMonitoring') {
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -269,8 +534,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     // Sauvegarder la sélection dans le stockage local
     chrome.storage.local.set({
       lastSelection: {
-        selector: request.selector,
-        text: request.text
+        fingerprint: request.fingerprint
       }
     });
   } else if (request.action === 'openSelectorWindow') {
